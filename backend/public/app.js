@@ -29,7 +29,7 @@ async function loadExpenses() {
           <div>
             <strong>${Number(e.amount).toFixed(2)}€</strong>
             <span>• ${d}</span>
-            <div style="font-size:12px;opacity:.8">${e.category || ""} ${e.vendor ? "• " + e.vendor : ""}</div>
+            <div style="font-size:12px;opacity:.8">${e.category || ""} ${e.vendor ? "• " + e.vendor : ""}${e.location ? "• " + e.location : ""}</div>
             <div style="font-size:12px;opacity:.7">${e.note || ""}</div>
           </div>
           <button data-id="${e._id}">Delete</button>
@@ -372,18 +372,47 @@ if (form) {
     const date = document.getElementById("date").value;
     const category = document.getElementById("category").value;
     const vendor = document.getElementById("vendor").value;
+    const location = document.getElementById("location").value;
     const note = document.getElementById("notes").value;
 
     await fetch(`${API}/expenses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount, date, category, vendor, note })
+      body: JSON.stringify({ amount, date, category, vendor, location, note })
     });
 
     form.reset();
     loadExpenses();
     loadBudgets();
   });
+}
+
+function initializeSocket() {
+  socket = io({
+    path: "/socket.io/",
+    withCredentials: true,
+    transports: ["websocket"]
+  });
+
+  socket.on("connect", () => {
+    console.log("Socket connected:", socket.id);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Socket disconnected");
+  });
+
+socket.on("budget_alert", alert => {
+  console.log("BUDGET ALERT RECEIVED", alert);
+  showToast(alert);
+  loadBudgets();
+});
+
+socket.on("fraud_alert", alert => {
+  console.log("FRAUD ALERT RECEIVED", alert);
+  showFraudToast(alert);
+  loadBudgets();
+});
 }
 
 // DOM Content Loaded - Main initialization
@@ -403,9 +432,13 @@ document.addEventListener('DOMContentLoaded', function() {
   if (authCheckEl) authCheckEl.style.display = 'none';
   if (appContentEl) appContentEl.style.display = 'block';
 
-  loadUserProfile();
-  loadExpenses();
-  loadBudgets();
+// Connect socket FIRST
+initializeSocket();
+
+// THEN load data
+loadUserProfile();
+loadExpenses();
+loadBudgets();
   
   // Budget button event listeners
   const addBudgetBtn = document.getElementById('addBudgetBtn');
@@ -462,25 +495,6 @@ if (cancelBudgetBtn) {
       window.location.href = '/login.html';
     });
   }
-
-  // Real-Time alert
-socket = io({
-  path: "/socket.io/",
-  withCredentials: true,
-  transports: ["websocket"]
-});
-
-  socket.on("connect", () => {
-    console.log("Socket connected:", socket.id);
-  });
-
-  socket.on("disconnect", () => {
-    console.log("Socket disconnected");
-  });
-
-  socket.on("budget_alert", alert => {
-    showToast(alert);
-  });
 });
 
 // Report button
@@ -538,7 +552,7 @@ if (exportLatestBtn) {
 // Real-time notification
 function showToast(alert) {
   const toast = document.createElement("div");
-  toast.className = "toast";
+  toast.className = "toast budget-toast";
 
   toast.innerHTML = `
     <div class="close">&times;</div>
@@ -563,4 +577,28 @@ function showToast(alert) {
     toast.remove();
   }, 6000);
   */
+}
+
+function showFraudToast(alert) {
+  const toast = document.createElement("div");
+
+  toast.className = "toast fraud-toast";
+
+  toast.innerHTML = `
+    <div class="close">&times;</div>
+    <strong>🚨 Fraud Alert</strong><br>
+    Suspicious transaction detected.<br>
+    Vendor: ${alert.vendor || "Unknown"}<br>
+    Amount: €${alert.amount}
+  `;
+
+  toastContainer.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.classList.add("show");
+  });
+
+  toast.querySelector(".close").onclick = () => {
+    toast.remove();
+  };
 }

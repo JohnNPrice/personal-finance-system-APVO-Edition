@@ -335,10 +335,14 @@ button:active {
   flex-direction: column;
   gap: 10px;
   z-index: 9999;
+
+  pointer-events: none;
 }
 
 .toast {
   min-width: 260px;
+  max-width: 340px;
+  word-wrap: break-word;
   background: #2c2c2c;
   color: #fff;
   padding: 12px 16px;
@@ -347,6 +351,7 @@ button:active {
   opacity: 0;
   transform: translateY(-6px);
   transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: auto;
 }
 
 .toast.show {
@@ -358,8 +363,23 @@ button:active {
   float: right;
   cursor: pointer;
   margin-left: 8px;
+  opacity: 0.7;
 }
 
 .toast .close:hover {
   opacity: 1;
+}
+
+.fraud-toast {
+  border-left: 6px solid #dc3545;
+  background: #fff5f5;
+  color: #721c24;
+}
+
+.fraud-toast .close {
+  color: #721c24;
+}
+
+.budget-toast {
+  border-left: 6px solid #ffc107;
 }

@@ -6,7 +6,11 @@ const { MongoClient, ObjectId, Decimal128 } = require("mongodb");
 const session = require("express-session");
 const bcrypt = require("bcrypt");
 const cron = require("node-cron");
+const axios = require("axios");
 const MongoStore = require("connect-mongo"); //NEW SESSION
+const { createAdapter } = require("@socket.io/redis-adapter");
+const { createClient } = require("redis");
+
 
 const app = express();
 app.use(express.json());
@@ -544,7 +548,7 @@ app.get(
 
 // POST create expense
 app.post("/api/expenses", requireAuth, async (req, res) => {
-  const { amount, date, category, vendor, note } = req.body;
+  const { amount, date, category, vendor, location, note } = req.body;
 
   if (amount === undefined || date === undefined) {
     return res.status(400).json({ error: "amount and date are required" });
@@ -552,13 +556,120 @@ app.post("/api/expenses", requireAuth, async (req, res) => {
 
   const userId = new ObjectId(req.session.userId);
 
+  // =====================
+  // FRAUD DETECTION
+  // =====================
+
+  const expenseDate = new Date(date);
+
+  const hour = expenseDate.getHours();
+  const dayOfWeek = expenseDate.getDay();
+
+  const isWeekend =
+    dayOfWeek === 0 || dayOfWeek === 6 ? 1 : 0;
+
+  // Default ML payload
+  const mlData = {
+    Transaction_Amount: Number(amount),
+    Is_Weekend: isWeekend,
+    Risk_Score: 0.5,
+    Hour: hour,
+    DayOfWeek: dayOfWeek,
+
+    Location_London: 0,
+    Location_Mumbai: 0,
+    Location_New_York: 0,
+    Location_Sydney: 0,
+    Location_Tokyo: 0,
+
+    Merchant_Category_Clothing: 0,
+    Merchant_Category_Electronics: 0,
+    Merchant_Category_Groceries: 0,
+    Merchant_Category_Restaurants: 0,
+    Merchant_Category_Travel: 0
+  };
+
+  switch ((location || "").toLowerCase()) {
+  case "london":
+    mlData.Location_London = 1;
+    break;
+
+  case "mumbai":
+    mlData.Location_Mumbai = 1;
+    break;
+
+  case "new york":
+    mlData.Location_New_York = 1;
+    break;
+
+  case "sydney":
+    mlData.Location_Sydney = 1;
+    break;
+
+  case "tokyo":
+    mlData.Location_Tokyo = 1;
+    break;
+}
+
+  // Map your categories
+  switch ((category || "").toLowerCase()) {
+    case "coffee":
+    case "restaurant":
+    case "food":
+      mlData.Merchant_Category_Restaurants = 1;
+      break;
+
+    case "groceries":
+      mlData.Merchant_Category_Groceries = 1;
+      break;
+
+    case "electronics":
+      mlData.Merchant_Category_Electronics = 1;
+      break;
+
+    case "clothing":
+      mlData.Merchant_Category_Clothing = 1;
+      break;
+
+    case "travel":
+      mlData.Merchant_Category_Travel = 1;
+      break;
+  }
+
+  let isSuspicious = false;
+
+// TEMP TEST RULE
+if ((location || "").toUpperCase() === "FRAUD") {
+  isSuspicious = true;
+  console.log("TEST FRAUD TRIGGERED");
+}
+
+  try {
+    const mlResponse = await axios.post(
+      "http://localhost:5000/predict",
+      mlData
+    );
+
+    // Only overwrite if not already forced
+  if (!isSuspicious) {
+    isSuspicious = mlResponse.data.is_suspicious;
+  }
+
+    console.log("Fraud prediction:", isSuspicious);
+
+  } catch (mlError) {
+    console.error("ML API ERROR:", mlError.message);
+  }
+
   const expenseDoc = {
     amount: Decimal128.fromString(String(amount)),
     date: new Date(date),
     category: category || "Uncategorized",
     vendor: vendor || "",
+    location: location || "",
     note: note || "",
     user_id: userId,
+    is_suspicious: isSuspicious,
     created_at: new Date()
   };
 
@@ -580,45 +691,43 @@ app.post("/api/expenses", requireAuth, async (req, res) => {
         { session }
       );
 
-      // If no budget = no cache update
-      if (!budget) return;
+        if (budget) {
+          // 3. Update cache
+          await budgetCacheCol.updateOne(
+            {
+              user_id: userId,
+              month: monthKey,
+              category: expenseDoc.category
+            },
+            {
+              $inc: { total: Number(amount) },
+              $set: { updated_at: new Date() }
+            },
+            { upsert: true, session }
+          );
 
-      // 3. Update cache 
-      await budgetCacheCol.updateOne(
-        {
-          user_id: userId,
-          month: monthKey,
-          category: expenseDoc.category
-        },
-        {
-          $inc: { total: Number(amount) },
-          $set: { updated_at: new Date() }
-        },
-        { upsert: true, session }
-      );
+          const cacheDoc = await budgetCacheCol.findOne(
+            {
+              user_id: userId,
+              month: monthKey,
+              category: expenseDoc.category
+            },
+            { session }
+          );
 
-      
-      const cacheDoc = await budgetCacheCol.findOne(
-        {
-          user_id: userId,
-          month: monthKey,
-          category: expenseDoc.category
-        },
-        { session }
-      );
+          // 4. Check budget limit
+          const limit = Number(budget.budget_amount.toString());
+          const spent = cacheDoc.total;
 
-      // 4. Check budget limit
-      const limit = Number(budget.budget_amount.toString());
-      const spent = cacheDoc.total;
-
-      if (spent > limit) {
-        alerts.push({
-          type: "category",
-          category: expenseDoc.category,
-          spent,
-          limit
-        });
-      }
+          if (spent > limit) {
+            alerts.push({
+              type: "category",
+              category: expenseDoc.category,
+              spent,
+              limit
+            });
+          }
+        }
     });
 
     // Expenses log
@@ -630,18 +739,35 @@ app.post("/api/expenses", requireAuth, async (req, res) => {
       hasAlerts: alerts.length > 0
     });
 
-    if (alerts.length > 0) {
-      const io = req.app.get("io");
+      // Budget alerts
+      if (alerts.length > 0) {
+        const io = req.app.get("io");
 
-      alerts.forEach(a => {
-        io.to(`user:${req.session.userId}`).emit("budget_alert", {
-          category: a.category,
-          spent: a.spent,
-          limit: a.limit,
-          percentage: a.percentage
+        alerts.forEach(a => {
+          io.to(`user:${req.session.userId}`).emit("budget_alert", {
+            category: a.category,
+            spent: a.spent,
+            limit: a.limit,
+            percentage: a.percentage
+          });
         });
-      });
-    }
+      }
+
+      // Fraud alerts
+        if (isSuspicious) {
+          const io = req.app.get("io");
+
+          console.log("EMITTING TO ROOM:", `user:${req.session.userId}`);
+
+          io.to(`user:${req.session.userId}`).emit("fraud_alert", {
+            amount: amount,
+            category: category,
+            location: location,
+            vendor: vendor
+          });
+
+          console.log("FRAUD ALERT EMITTED");
+        }
 
 
     res.status(201).json({
@@ -983,6 +1109,21 @@ const io = new Server(server, {
   }
 });
 
+async function setupSocketIO() {
+  const pubClient = createClient({
+    url: "redis://redis:6379"
+  });
+
+  const subClient = pubClient.duplicate();
+
+  await pubClient.connect();
+  await subClient.connect();
+
+  io.adapter(createAdapter(pubClient, subClient));
+
+  console.log("Socket.IO Redis adapter enabled");
+}
+
 io.use((socket, next) => {
   sessionMiddleware(socket.request, {}, next);
 });
@@ -1030,11 +1171,15 @@ io.on("connection", async (socket) => {
 
 
 connectMongo()
-  .then(() => {
+  .then(async () => {
+
+    await setupSocketIO();
+
     server.listen(PORT, () => {
       console.log(`Backend running on http://localhost:${PORT}`);
       console.log("WebSocket server attached");
     });
+
   })
   .catch(err => {
     console.error("Mongo connection failed:", err);
