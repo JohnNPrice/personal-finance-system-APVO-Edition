@@ -18,6 +18,14 @@ services:
         gelf-address: "udp://host.docker.internal:12201"
         tag: "{{.Name}}"
 
+  ml-service:
+    build: ./ml-service
+    container_name: ml-service
+    expose:
+      - "5000"
+    networks:
+      - pis-net
+
   nginx:
     image: nginx:latest
     ports:

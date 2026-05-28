@@ -575,6 +575,7 @@ app.post("/api/expenses", requireAuth, async (req, res) => {
     Risk_Score: 0.5,
     Hour: hour,
     DayOfWeek: dayOfWeek,
+    location: location,
 
     Location_London: 0,
     Location_Mumbai: 0,
@@ -639,21 +640,19 @@ app.post("/api/expenses", requireAuth, async (req, res) => {
   let isSuspicious = false;
 
 // TEMP TEST RULE
+/*
 if ((location || "").toUpperCase() === "FRAUD") {
   isSuspicious = true;
   console.log("TEST FRAUD TRIGGERED");
-}
+}*/
 
   try {
     const mlResponse = await axios.post(
-      "http://localhost:5000/predict",
+      "http://ml-service:5000/predict",
       mlData
     );
 
-    // Only overwrite if not already forced
-  if (!isSuspicious) {
     isSuspicious = mlResponse.data.is_suspicious;
-  }
 
     console.log("Fraud prediction:", isSuspicious);
 
