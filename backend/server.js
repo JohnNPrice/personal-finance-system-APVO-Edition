@@ -562,7 +562,9 @@ app.post("/api/expenses", requireAuth, async (req, res) => {
 
   const expenseDate = new Date(date);
 
-  const hour = expenseDate.getHours();
+  const now = new Date(); // stvarno trenutno vrijeme
+  const hour = now.getHours();
+
   const dayOfWeek = expenseDate.getDay();
 
   const isWeekend =
